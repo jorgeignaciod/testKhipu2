@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Integración Khipu API</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        /* Establece la fuente principal para todo el cuerpo del documento */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 flex items-center justify-center min-h-screen p-4">
+    <div class="bg-white p-8 rounded-lg shadow-lg w-full max-w-md">
+        <h1 class="text-3xl font-bold text-center text-gray-800 mb-6">Realizar Pago con Khipu</h1>
+
+        <form id="paymentForm" class="space-y-4">
+            <div>
+                <label for="subject" class="block text-sm font-medium text-gray-700">Asunto del Cobro:</label>
+                <input type="text" id="subject" name="subject" value="Producto de Prueba" required
+                       class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+            </div>
+            <div>
+                <label for="amount" class="block text-sm font-medium text-gray-700">Monto (CLP, máx. $5.000):</label>
+                <input type="number" id="amount" name="amount" value="4999" min="1" max="5000" step="0.01" required
+                       class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+            </div>
+            <div>
+                <label for="transactionId" class="block text-sm font-medium text-gray-700">ID de Transacción (opcional):</label>
+                <input type="text" id="transactionId" name="transactionId" placeholder="Ej: TXN12345"
+                       class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+            </div>
+            <div>
+                <label for="payerEmail" class="block text-sm font-medium text-gray-700">Email del Pagador (opcional):</label>
+                <input type="email" id="payerEmail" name="payerEmail" placeholder="ejemplo@dominio.com"
+                       class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+            </div>
+
+            <button type="submit" id="createPaymentBtn"
+                    class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition duration-150 ease-in-out">
+                Crear Cobro Khipu
+            </button>
+        </form>
+
+        <div id="loadingIndicator" class="mt-4 text-center text-gray-600 hidden">
+            Generando cobro...
+        </div>
+
+        <div id="paymentResult" class="mt-6 p-4 bg-gray-50 rounded-md hidden">
+            <p class="text-lg font-semibold text-gray-800 mb-2">Resultado del Cobro:</p>
+            <div id="paymentUrlContainer" class="hidden">
+                <p class="text-sm text-gray-600">Haz clic en el siguiente enlace para completar el pago:</p>
+                <a id="paymentLink" href="#" target="_blank"
+                   class="block mt-2 text-center py-2 px-4 rounded-md text-white bg-green-600 hover:bg-green-700 transition duration-150 ease-in-out">
+                    Ir a Pagar
+                </a>
+                <p class="text-xs text-gray-500 mt-2">URL del pago: <span id="paymentUrlText" class="break-all"></span></p>
+            </div>
+            <div id="errorMessageContainer" class="hidden text-red-600">
+                <p class="font-medium">Error al crear el cobro:</p>
+                <p id="errorMessage" class="text-sm"></p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Credenciales de Khipu proporcionadas.
+        // ¡IMPORTANTE! En un entorno de producción real, estas credenciales NUNCA deben estar en el código del lado del cliente (frontend).
+        // Deben ser manejadas de forma segura en tu backend para evitar exposición.
+        const COLLECTOR_ID = '498790';
+        const COLLABORATOR_KEY = 'aef9f1ec38e7a04d4f4097fe9b34272071520772';
+        const API_KEY = '3c504051-c3a7-4890-ae37-b5129e2b1be0'; // Esta llave API no se usa directamente en el endpoint de "crear cobro" según la documentación de autenticación con Basic Auth.
+
+        // Obtener referencias a los elementos del DOM
+        const paymentForm = document.getElementById('paymentForm');
+        const createPaymentBtn = document.getElementById('createPaymentBtn');
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const paymentResult = document.getElementById('paymentResult');
+        const paymentUrlContainer = document.getElementById('paymentUrlContainer');
+        const paymentLink = document.getElementById('paymentLink');
+        const paymentUrlText = document.getElementById('paymentUrlText');
+        const errorMessageContainer = document.getElementById('errorMessageContainer');
+        const errorMessage = document.getElementById('errorMessage');
+
+        // Añadir un 'event listener' al formulario para manejar el envío
+        paymentForm.addEventListener('submit', async (e) => {
+            e.preventDefault(); // Prevenir el comportamiento por defecto del formulario (recarga de página)
+
+            // Ocultar cualquier resultado o error anterior y mostrar el indicador de carga
+            paymentResult.classList.add('hidden');
+            paymentUrlContainer.classList.add('hidden');
+            errorMessageContainer.classList.add('hidden');
+            loadingIndicator.classList.remove('hidden');
+            createPaymentBtn.disabled = true; // Deshabilitar el botón para evitar múltiples envíos
+
+            // Obtener los valores del formulario
+            const subject = document.getElementById('subject').value;
+            const amount = parseFloat(document.getElementById('amount').value);
+            const transactionId = document.getElementById('transactionId').value;
+            const payerEmail = document.getElementById('payerEmail').value;
+
+            // Construir el cuerpo de la solicitud para la API de Khipu
+            const requestBody = {
+                subject: subject,
+                amount: amount,
+                currency: 'CLP', // Moneda Chilena
+                receiver_id: COLLECTOR_ID,
+                body: `Pago por ${subject}`,
+                // return_url y cancel_url: URLs a las que Khipu redirigirá al usuario después del pago.
+                // Para este demo, se redirige a la misma página. En producción, serían URLs específicas de éxito/fracaso.
+                return_url: window.location.href,
+                cancel_url: window.location.href,
+                // notify_url: 'TU_URL_DE_NOTIFICACION_DE_BACKEND', // En un entorno real, Khipu enviaría notificaciones a este endpoint de tu servidor.
+                transaction_id: transactionId || `DEMO-${Date.now()}`, // ID de transacción único para la demo
+                payer_email: payerEmail || undefined, // Email del pagador, opcional
+                test_mode: true // ¡MUY IMPORTANTE! Esto asegura que el cobro se cree en el entorno de pruebas (DemoBank).
+            };
+
+            // Preparar la autenticación Basic Auth: Base64(COLLECTOR_ID:COLLABORATOR_KEY)
+            const authString = btoa(`${COLLECTOR_ID}:${COLLABORATOR_KEY}`);
+
+            try {
+                // Realizar la llamada a la API de Khipu usando fetch
+                const response = await fetch('https://khipu.com/api/2.0/payments', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json', // Indicar que el cuerpo es JSON
+                        'Authorization': `Basic ${authString}` // Cabecera de autenticación
+                    },
+                    body: JSON.stringify(requestBody) // Convertir el cuerpo a JSON string
+                });
+
+                // Ocultar el indicador de carga una vez que se recibe la respuesta
+                loadingIndicator.classList.add('hidden');
+                paymentResult.classList.remove('hidden'); // Mostrar el contenedor de resultados
+
+                // Verificar si la respuesta de la API fue exitosa (código de estado 2xx)
+                if (response.ok) {
+                    const data = await response.json(); // Parsear la respuesta JSON
+                    if (data && data.payment_url) {
+                        // Si la URL de pago existe, mostrarla y habilitar el botón de pago
+                        paymentLink.href = data.payment_url;
+                        paymentUrlText.textContent = data.payment_url;
+                        paymentUrlContainer.classList.remove('hidden');
+                        // Opcional: Para una integración más fluida, podrías redirigir automáticamente:
+                        // window.location.href = data.payment_url;
+                    } else {
+                        // Manejar el caso de una respuesta exitosa pero sin payment_url
+                        errorMessage.textContent = 'Respuesta de API inesperada: no se encontró payment_url.';
+                        errorMessageContainer.classList.remove('hidden');
+                    }
+                } else {
+                    // Manejar errores de la API (códigos de estado 4xx o 5xx)
+                    const errorData = await response.json(); // Intentar parsear el error JSON
+                    errorMessage.textContent = `Error ${response.status}: ${errorData.message || JSON.stringify(errorData)}`;
+                    errorMessageContainer.classList.remove('hidden');
+                }
+            } catch (error) {
+                // Capturar errores de red o errores inesperados durante la solicitud
+                loadingIndicator.classList.add('hidden');
+                paymentResult.classList.remove('hidden');
+                errorMessage.textContent = `Error de red o inesperado: ${error.message}`;
+                errorMessageContainer.classList.remove('hidden');
+            } finally {
+                // Asegurarse de que el botón se habilite de nuevo al finalizar la operación
+                createPaymentBtn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>
